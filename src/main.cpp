@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include "max98389.h"
+#include <Audio.h>
 
 // put function declarations here:
 int myFunction(int, int);
