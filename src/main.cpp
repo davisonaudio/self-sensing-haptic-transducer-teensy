@@ -3,39 +3,47 @@
 #include "max98389.h"
 #include <Audio.h>
 
-#define CIRCULAR_BUFFER_LENGTH AUDIO_BLOCK_SAMPLES*4
-#define MAX_SAMPLE_BLOCKS (CIRCULAR_BUFFER_LENGTH / AUDIO_BLOCK_SAMPLES)-1
-//Audio library macro, AUDIO_BLOCK_SAMPLES = 128
+#include "au_Biquad.h"
+#include "au_config.h"
 
-// GUItool: begin automatically generated code
-#include <Audio.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <SerialFlash.h>
+#include "TransducerFeedbackCancellation.h"
+#include "ForceSensing.h"
 
+#define RESONANT_FREQ_HZ 380
+
+//Import generated code here to view block diagram https://www.pjrc.com/teensy/gui/
 // GUItool: begin automatically generated code
+AudioInputI2SQuad        i2s_quad_in;      //xy=316,366
 AudioInputUSB            usb_in;           //xy=331,160
-AudioInputI2SQuad        i2s_quad_in;      //xy=336,370
-AudioRecordQueue         queue_inR;         //xy=487,179
-AudioRecordQueue         queue_inL;         //xy=488,146
-AudioPlayQueue           queue_outR;         //xy=653,182
-AudioPlayQueue           queue_outL;         //xy=654,147
-AudioOutputUSB           usb_out;           //xy=758,386
-AudioOutputI2S           i2s_out;           //xy=790,159
-AudioConnection          patchCord1(usb_in, 0, queue_inL, 0);
-AudioConnection          patchCord2(usb_in, 1, queue_inR, 0);
-AudioConnection          patchCord3(i2s_quad_in, 2, usb_out, 0);
-AudioConnection          patchCord4(i2s_quad_in, 3, usb_out, 1);
-AudioConnection          patchCord5(queue_outR, 0, i2s_out, 1);
-AudioConnection          patchCord6(queue_outL, 0, i2s_out, 0);
-AudioControlSGTL5000     sgtl5000_1;     //xy=494,473
+AudioRecordQueue         queue_inR_usb;         //xy=487,179
+AudioRecordQueue         queue_inL_usb;         //xy=488,146
+AudioRecordQueue         queue_inL_i2s;         //xy=490,338
+AudioRecordQueue         queue_inR_i2s;         //xy=492,414
+AudioPlayQueue           queue_outR_i2s;         //xy=653,182
+AudioPlayQueue           queue_outL_i2s;         //xy=654,147
+AudioPlayQueue           queue_outR_usb;         //xy=660,410
+AudioPlayQueue           queue_outL_usb;         //xy=664,339
+AudioOutputI2S           i2s_out;           //xy=814,160
+AudioOutputUSB           usb_out;           //xy=819,377
+AudioConnection          patchCord1(i2s_quad_in, 2, queue_inL_i2s, 0);
+AudioConnection          patchCord2(i2s_quad_in, 3, queue_inR_i2s, 0);
+AudioConnection          patchCord3(usb_in, 0, queue_inL_usb, 0);
+AudioConnection          patchCord4(usb_in, 1, queue_inR_usb, 0);
+AudioConnection          patchCord5(queue_outR_i2s, 0, i2s_out, 1);
+AudioConnection          patchCord6(queue_outL_i2s, 0, i2s_out, 0);
+AudioConnection          patchCord7(queue_outR_usb, 0, usb_out, 1);
+AudioConnection          patchCord8(queue_outL_usb, 0, usb_out, 0);
+AudioControlSGTL5000     sgtl5000_1;     //xy=527,521
 // GUItool: end automatically generated code
 
-
 bool configured = false;
+
 IntervalTimer myTimer;
 int ledState = LOW;
+
+TransducerFeedbackCancellation transducer_processing;
+ForceSensing force_sensing;
+Biquad meter_filter;
 
 void blinkLED() {
   if (ledState == LOW) {
@@ -48,7 +56,8 @@ void blinkLED() {
 
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT);
-    myTimer.begin(blinkLED, 1000000);  // blinkLED to run every 1 seconds
+    digitalWrite(LED_BUILTIN, HIGH);
+    //myTimer.begin(blinkLED, 1000000);  // blinkLED to run every 1 seconds
 
     // Enable the serial port for debugging
     Serial.begin(9600);
@@ -63,51 +72,88 @@ void setup() {
     } else {
         Serial.println("Not configured");
     }
-    AudioMemory(128);
+    AudioMemory(1024);
     sgtl5000_1.enable();
     sgtl5000_1.volume(0.5);
-    queue_inL.begin();
-    queue_inR.begin();
+
+
+    TransducerFeedbackCancellation::Setup processing_setup;
+    processing_setup.resonant_frequency_hz = RESONANT_FREQ_HZ;
+    processing_setup.resonance_peak_gain_db = 23.5;
+    processing_setup.resonance_q = 16.0;
+    processing_setup.resonance_tone_level_db = -10.0;
+    processing_setup.inductance_filter_coefficient = 0.5;
+    processing_setup.transducer_input_wideband_gain_db = 0.0;
+    processing_setup.sample_rate_hz = AUDIO_SAMPLE_RATE_EXACT;
+    transducer_processing.setup(processing_setup);
+
+    queue_inL_usb.begin();
+    queue_inR_usb.begin();
+    queue_inL_i2s.begin();
+    queue_inR_i2s.begin();
 }
 
-
-int curSample = 0;
-int curBlock = 0;
-
-double buf_L[CIRCULAR_BUFFER_LENGTH] = {0.0};
-double buf_R[CIRCULAR_BUFFER_LENGTH] = {0.0};
+short buf_inL_usb[AUDIO_BLOCK_SAMPLES];
+short buf_inR_usb[AUDIO_BLOCK_SAMPLES];
+short buf_inL_i2s[AUDIO_BLOCK_SAMPLES];
+short buf_inR_i2s[AUDIO_BLOCK_SAMPLES];
 
 void loop() {
-    short *bp_L, *bp_R;
+    short *bp_inL_usb, *bp_inR_usb, *bp_outL_i2s, *bp_outR_i2s;
 
     // Wait for left and right input channels to have content
-    while (!queue_inL.available() && !queue_inR.available());
+    while (queue_inL_usb.available() < 1 && queue_inR_usb.available() < 1
+        /*&& queue_inR_i2s.available() < 1 && queue_inR_i2s.available() < 1*/);
 
-    bp_L = queue_inL.readBuffer();
-    bp_R = queue_inR.readBuffer();
+    bp_inL_usb = queue_inL_usb.readBuffer();
+    bp_inR_usb = queue_inR_usb.readBuffer();
+    bp_outL_i2s = queue_inL_i2s.readBuffer();
+    bp_outR_i2s = queue_inR_i2s.readBuffer();
 
-    int startIndex = curBlock * AUDIO_BLOCK_SAMPLES;
-    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-        curSample = startIndex + i;
-        buf_L[curSample] = (double)bp_L[i];
-        buf_R[curSample] = (double)bp_R[i];
+    for(int i = 0; i < AUDIO_BLOCK_SAMPLES; i++){
+        buf_inL_usb[i] = bp_inL_usb[i];
+        buf_inR_usb[i] = bp_inR_usb[i];
+        buf_inL_i2s[i] = bp_outL_i2s[i];
+        buf_inR_i2s[i] = bp_outR_i2s[i];
     }
-
-    queue_inL.freeBuffer();
-    queue_inR.freeBuffer();
+    
+    //Free input buffers
+    queue_inL_usb.freeBuffer();
+    queue_inR_usb.freeBuffer();
+    queue_inL_i2s.freeBuffer();
+    queue_inR_i2s.freeBuffer();
 
     // Get pointers to "empty" output buffers
-    bp_L = queue_outL.getBuffer();
-    bp_R = queue_outR.getBuffer();
+    bp_outL_i2s = queue_outL_i2s.getBuffer();
+    bp_outR_i2s = queue_outR_i2s.getBuffer();
 
-    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-        bp_L[i] = (short)buf_L[i];
-        bp_R[i] = (short)buf_R[i];
-        curBlock++;
-        curBlock &= MAX_SAMPLE_BLOCKS;
+    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {        
+        TransducerFeedbackCancellation::UnprocessedSamples unprocessed;
+        /*unprocessed.output_to_transducer = audioRead(context, n, INPUT_ACTUATION_SIGNAL_PIN);
+        unprocessed.input_from_transducer = audioRead(context, n, INPUT_VOLTAGE_PIN);
+        unprocessed.reference_input_loopback = 5 * audioRead(context, n, INPUT_LOOPBACK_PIN);*/
+        unprocessed.output_to_transducer = buf_inL_usb[i];
+        unprocessed.input_from_transducer = buf_inL_usb[i];
+        unprocessed.reference_input_loopback = buf_inL_usb[i];
+        TransducerFeedbackCancellation::ProcessedSamples processed = transducer_processing.process(unprocessed);
 
-        // and play them back into the audio queues
-        queue_outL.playBuffer();
-        queue_outR.playBuffer();
+        /*audioWrite(context, n, OUTPUT_AMP_PIN, processed.output_to_transducer * 0.2);
+        audioWrite(context, n, OUTPUT_LOOPBACK_PIN, processed.output_to_transducer * 0.2);
+        audioWrite(context, n, OUTPUT_PICKUP_SIGNAL_PIN, processed.input_feedback_removed);*/
+
+        bp_outL_i2s[i] = processed.output_to_transducer;
+        bp_outR_i2s[i] = processed.output_to_transducer;
+        
+        force_sensing.process(processed.input_feedback_removed, processed.output_to_transducer);
+
+
+        //scope.log(processed.transducer_return_with_gain_applied, processed.modelled_signal, processed.input_feedback_removed);
+
+        // rectify and filter signal for GUI meter
+        /*sample_t input_feedback_removed_rectified = abs(processed.input_feedback_removed);  
+        sample_t input_feedback_removed_rectified_lowpass = meter_filter.process(input_feedback_removed_rectified);*/
     }
+    // Play output buffers
+    queue_outL_i2s.playBuffer();
+    queue_outR_i2s.playBuffer();
 }
