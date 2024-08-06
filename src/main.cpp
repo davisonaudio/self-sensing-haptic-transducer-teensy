@@ -15,24 +15,21 @@
 #include <SerialFlash.h>
 
 // GUItool: begin automatically generated code
-AudioInputUSB            usb1;           //xy=331,160
-AudioInputI2SQuad        i2s_quad1;      //xy=335,380
-AudioRecordQueue         queue3;         //xy=487,179
-AudioRecordQueue         queue1;         //xy=488,146
-AudioPlayQueue           queue4;         //xy=653,182
-AudioPlayQueue           queue2;         //xy=654,147
-AudioOutputUSB           usb2;           //xy=758,386
-AudioOutputI2S           i2s2;           //xy=775,154
-AudioConnection          patchCord1(usb1, 0, queue1, 0);
-AudioConnection          patchCord2(usb1, 1, queue3, 0);
-AudioConnection          patchCord3(i2s_quad1, 2, usb2, 0);
-AudioConnection          patchCord4(i2s_quad1, 3, usb2, 1);
-AudioConnection          patchCord5(queue4, 0, i2s2, 1);
-AudioConnection          patchCord6(queue2, 0, i2s2, 0);
+AudioInputUSB            usb_in;           //xy=331,160
+AudioInputI2SQuad        i2s_quad_in;      //xy=336,370
+AudioRecordQueue         queue_inR;         //xy=487,179
+AudioRecordQueue         queue_inL;         //xy=488,146
+AudioPlayQueue           queue_outR;         //xy=653,182
+AudioPlayQueue           queue_outL;         //xy=654,147
+AudioOutputUSB           usb_out;           //xy=758,386
+AudioOutputI2S           i2s_out;           //xy=790,159
+AudioConnection          patchCord1(usb_in, 0, queue_inL, 0);
+AudioConnection          patchCord2(usb_in, 1, queue_inR, 0);
+AudioConnection          patchCord3(i2s_quad_in, 2, usb_out, 0);
+AudioConnection          patchCord4(i2s_quad_in, 3, usb_out, 1);
+AudioConnection          patchCord5(queue_outR, 0, i2s_out, 1);
+AudioConnection          patchCord6(queue_outL, 0, i2s_out, 0);
 AudioControlSGTL5000     sgtl5000_1;     //xy=494,473
-// GUItool: end automatically generated code
-
-
 // GUItool: end automatically generated code
 
 
@@ -69,8 +66,8 @@ void setup() {
     AudioMemory(128);
     sgtl5000_1.enable();
     sgtl5000_1.volume(0.5);
-    queue1.begin();
-    queue3.begin();
+    queue_inL.begin();
+    queue_inR.begin();
 }
 
 
@@ -84,10 +81,10 @@ void loop() {
     short *bp_L, *bp_R;
 
     // Wait for left and right input channels to have content
-    while (!queue1.available() && !queue3.available());
+    while (!queue_inL.available() && !queue_inR.available());
 
-    bp_L = queue1.readBuffer();
-    bp_R = queue3.readBuffer();
+    bp_L = queue_inL.readBuffer();
+    bp_R = queue_inR.readBuffer();
 
     int startIndex = curBlock * AUDIO_BLOCK_SAMPLES;
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
@@ -96,12 +93,12 @@ void loop() {
         buf_R[curSample] = (double)bp_R[i];
     }
 
-    queue1.freeBuffer();
-    queue3.freeBuffer();
+    queue_inL.freeBuffer();
+    queue_inR.freeBuffer();
 
     // Get pointers to "empty" output buffers
-    bp_L = queue2.getBuffer();
-    bp_R = queue4.getBuffer();
+    bp_L = queue_outL.getBuffer();
+    bp_R = queue_outR.getBuffer();
 
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
         bp_L[i] = (short)buf_L[i];
@@ -110,7 +107,7 @@ void loop() {
         curBlock &= MAX_SAMPLE_BLOCKS;
 
         // and play them back into the audio queues
-        queue2.playBuffer();
-        queue4.playBuffer();
+        queue_outL.playBuffer();
+        queue_outR.playBuffer();
     }
 }
