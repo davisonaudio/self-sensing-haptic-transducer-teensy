@@ -84,7 +84,7 @@ void setup() {
     processing_setup.resonance_q = 16.0;
     processing_setup.resonance_tone_level_db = -10.0;
     processing_setup.inductance_filter_coefficient = 0.5;
-    processing_setup.transducer_input_wideband_gain_db = 0.0;
+    processing_setup.transducer_input_wideband_gain_db = -8.36706445514;
     processing_setup.sample_rate_hz = AUDIO_SAMPLE_RATE_EXACT;
     processing_setup.amplifier_type = TransducerFeedbackCancellation::AmplifierType::VOLTAGE_DRIVE;
     transducer_processing.setup(processing_setup);
@@ -99,7 +99,6 @@ int16_t buf_inL_usb[AUDIO_BLOCK_SAMPLES];
 int16_t buf_inR_usb[AUDIO_BLOCK_SAMPLES];
 int16_t buf_inL_i2s[AUDIO_BLOCK_SAMPLES];
 int16_t buf_inR_i2s[AUDIO_BLOCK_SAMPLES];
-double loopback;
 
 void loop() {
     int16_t *bp_outL_usb, *bp_outR_usb, *bp_outL_i2s, *bp_outR_i2s;
@@ -132,8 +131,8 @@ void loop() {
         unprocessed.input_from_transducer = audioRead(context, n, INPUT_VOLTAGE_PIN);
         unprocessed.reference_input_loopback = 5 * audioRead(context, n, INPUT_LOOPBACK_PIN);*/
         unprocessed.output_to_transducer = buf_inL_usb[i];
-        unprocessed.input_from_transducer = buf_inR_i2s[i];
-        unprocessed.reference_input_loopback = loopback;
+        unprocessed.input_from_transducer = buf_inR_i2s[i]; //Current measurement from amp
+        unprocessed.reference_input_loopback = buf_inL_i2s[i]; //Voltage measurement from amp
         TransducerFeedbackCancellation::ProcessedSamples processed = transducer_processing.process(unprocessed);
 
         /*audioWrite(context, n, OUTPUT_AMP_PIN, processed.output_to_transducer * 0.2);
@@ -142,9 +141,8 @@ void loop() {
 
         bp_outL_i2s[i] = processed.output_to_transducer;
         bp_outR_i2s[i] = processed.output_to_transducer;
-        loopback = processed.output_to_transducer;
-        bp_outL_usb[i] = processed.input_feedback_removed;
-        bp_outR_usb[i] = processed.input_feedback_removed;        
+        bp_outL_usb[i] = processed.input_feedback_removed * 10;
+        bp_outR_usb[i] = unprocessed.reference_input_loopback;        
 
         force_sensing.process(processed.input_feedback_removed, processed.output_to_transducer);
 

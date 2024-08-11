@@ -207,6 +207,10 @@ void TransducerFeedbackCancellation::setup(Setup setup_parameters)
     m_input_from_transducer_lowpass.setup(lowpass_setup);
 
     amplifier_type = setup_parameters.amplifier_type;
+
+    if(amplifier_type == AmplifierType::VOLTAGE_DRIVE){
+        setAdmittanceFilter();
+    }
 }
 
 TransducerFeedbackCancellation::ProcessedSamples TransducerFeedbackCancellation::process(UnprocessedSamples unprocessed)
@@ -236,6 +240,7 @@ TransducerFeedbackCancellation::ProcessedSamples TransducerFeedbackCancellation:
 
         processed.transducer_return_with_gain_applied = m_transducer_input_wideband_gain_lin * unprocessed.input_from_transducer;
         processed.input_feedback_removed = processed.transducer_return_with_gain_applied - processed.modelled_signal;
+        processed.output_to_transducer = unprocessed.output_to_transducer;
         if (m_lowpass_filters_enabled)
         { //Filter to signal to/from transducer
             processed.output_to_transducer = m_output_to_transducer_lowpass.process(processed.output_to_transducer);
