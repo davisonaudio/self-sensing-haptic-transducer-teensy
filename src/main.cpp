@@ -33,13 +33,14 @@ AudioConnection          patchCord5(queue_outR_i2s, 0, i2s_out, 1);
 AudioConnection          patchCord6(queue_outL_i2s, 0, i2s_out, 0);
 AudioConnection          patchCord7(queue_outR_usb, 0, usb_out, 1);
 AudioConnection          patchCord8(queue_outL_usb, 0, usb_out, 0);
+//AudioConnection          patchCord7(i2s_quad_in, 2, usb_out, 0);
+//AudioConnection          patchCord8(i2s_quad_in, 3, usb_out, 1);
 AudioControlSGTL5000     sgtl5000_1;     //xy=527,521
 // GUItool: end automatically generated code
 
-bool configured = false;
-
 IntervalTimer myTimer;
 int ledState = LOW;
+bool configured = false;
 
 TransducerFeedbackCancellation transducer_processing;
 ForceSensing force_sensing;
@@ -55,15 +56,15 @@ void blinkLED() {
 }
 
 void setup() {
+    // blinkLED to run every 1 seconds
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, HIGH);
-    //myTimer.begin(blinkLED, 1000000);  // blinkLED to run every 1 seconds
+    myTimer.begin(blinkLED, 1000000);  
 
     // Enable the serial port for debugging
     Serial.begin(9600);
     Serial.println("Started");
+
     max98389 max;
-    max.master.set_internal_pullups(InternalPullup::disabled);
     max.begin(400 * 1000U);
     // Check that we can see the sensor and configure it.
     configured = max.configure();
@@ -72,7 +73,7 @@ void setup() {
     } else {
         Serial.println("Not configured");
     }
-    AudioMemory(1024);
+    AudioMemory(512);
     sgtl5000_1.enable();
     sgtl5000_1.volume(0.5);
 
@@ -85,6 +86,7 @@ void setup() {
     processing_setup.inductance_filter_coefficient = 0.5;
     processing_setup.transducer_input_wideband_gain_db = 0.0;
     processing_setup.sample_rate_hz = AUDIO_SAMPLE_RATE_EXACT;
+    processing_setup.amplifier_type = TransducerFeedbackCancellation::AmplifierType::VOLTAGE_DRIVE;
     transducer_processing.setup(processing_setup);
 
     queue_inL_usb.begin();
@@ -93,31 +95,26 @@ void setup() {
     queue_inR_i2s.begin();
 }
 
-short buf_inL_usb[AUDIO_BLOCK_SAMPLES];
-short buf_inR_usb[AUDIO_BLOCK_SAMPLES];
-short buf_inL_i2s[AUDIO_BLOCK_SAMPLES];
-short buf_inR_i2s[AUDIO_BLOCK_SAMPLES];
+int16_t buf_inL_usb[AUDIO_BLOCK_SAMPLES];
+int16_t buf_inR_usb[AUDIO_BLOCK_SAMPLES];
+int16_t buf_inL_i2s[AUDIO_BLOCK_SAMPLES];
+int16_t buf_inR_i2s[AUDIO_BLOCK_SAMPLES];
+double loopback;
 
 void loop() {
-    short *bp_inL_usb, *bp_inR_usb, *bp_outL_i2s, *bp_outR_i2s;
+    int16_t *bp_outL_usb, *bp_outR_usb, *bp_outL_i2s, *bp_outR_i2s;
 
-    // Wait for left and right input channels to have content
-    while (queue_inL_usb.available() < 1 && queue_inR_usb.available() < 1
-        /*&& queue_inR_i2s.available() < 1 && queue_inR_i2s.available() < 1*/);
+    // Wait for all channels to have content
+    while (!queue_inL_usb.available() || !queue_inR_usb.available()
+        || !queue_inL_i2s.available() || !queue_inR_i2s.available());
 
-    bp_inL_usb = queue_inL_usb.readBuffer();
-    bp_inR_usb = queue_inR_usb.readBuffer();
-    bp_outL_i2s = queue_inL_i2s.readBuffer();
-    bp_outR_i2s = queue_inR_i2s.readBuffer();
-
-    for(int i = 0; i < AUDIO_BLOCK_SAMPLES; i++){
-        buf_inL_usb[i] = bp_inL_usb[i];
-        buf_inR_usb[i] = bp_inR_usb[i];
-        buf_inL_i2s[i] = bp_outL_i2s[i];
-        buf_inR_i2s[i] = bp_outR_i2s[i];
-    }
+    //Copy queue input buffers
+    memcpy(buf_inL_usb, queue_inL_usb.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
+    memcpy(buf_inR_usb, queue_inR_usb.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
+    memcpy(buf_inL_i2s, queue_inL_i2s.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
+    memcpy(buf_inR_i2s, queue_inR_i2s.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
     
-    //Free input buffers
+    //Free queue input buffers
     queue_inL_usb.freeBuffer();
     queue_inR_usb.freeBuffer();
     queue_inL_i2s.freeBuffer();
@@ -126,6 +123,8 @@ void loop() {
     // Get pointers to "empty" output buffers
     bp_outL_i2s = queue_outL_i2s.getBuffer();
     bp_outR_i2s = queue_outR_i2s.getBuffer();
+    bp_outL_usb = queue_outL_usb.getBuffer();
+    bp_outR_usb = queue_outR_usb.getBuffer();
 
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {        
         TransducerFeedbackCancellation::UnprocessedSamples unprocessed;
@@ -133,8 +132,8 @@ void loop() {
         unprocessed.input_from_transducer = audioRead(context, n, INPUT_VOLTAGE_PIN);
         unprocessed.reference_input_loopback = 5 * audioRead(context, n, INPUT_LOOPBACK_PIN);*/
         unprocessed.output_to_transducer = buf_inL_usb[i];
-        unprocessed.input_from_transducer = buf_inL_usb[i];
-        unprocessed.reference_input_loopback = buf_inL_usb[i];
+        unprocessed.input_from_transducer = buf_inR_i2s[i];
+        unprocessed.reference_input_loopback = loopback;
         TransducerFeedbackCancellation::ProcessedSamples processed = transducer_processing.process(unprocessed);
 
         /*audioWrite(context, n, OUTPUT_AMP_PIN, processed.output_to_transducer * 0.2);
@@ -143,7 +142,10 @@ void loop() {
 
         bp_outL_i2s[i] = processed.output_to_transducer;
         bp_outR_i2s[i] = processed.output_to_transducer;
-        
+        loopback = processed.output_to_transducer;
+        bp_outL_usb[i] = processed.input_feedback_removed;
+        bp_outR_usb[i] = processed.input_feedback_removed;        
+
         force_sensing.process(processed.input_feedback_removed, processed.output_to_transducer);
 
 
@@ -153,7 +155,18 @@ void loop() {
         /*sample_t input_feedback_removed_rectified = abs(processed.input_feedback_removed);  
         sample_t input_feedback_removed_rectified_lowpass = meter_filter.process(input_feedback_removed_rectified);*/
     }
-    // Play output buffers
-    queue_outL_i2s.playBuffer();
-    queue_outR_i2s.playBuffer();
+
+    // Play output buffers. Retry until success.
+    while(queue_outL_i2s.playBuffer()){
+        Serial.println("Play i2s left fail.");
+    }
+    while(queue_outR_i2s.playBuffer()){
+        Serial.println("Play i2s right fail.");
+    }
+    while(queue_outL_usb.playBuffer()){
+        Serial.println("Play usb left fail.");
+    }
+    while(queue_outR_usb.playBuffer()){
+        Serial.println("Play usb right fail.");
+    }
 }

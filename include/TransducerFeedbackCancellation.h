@@ -43,6 +43,7 @@ public:
     void setResonanceToneLevelDb(sample_t resonance_tone_level_db);
     void setInductanceFilterCoefficient(sample_t inductance_filter_coefficient);
     void setTransducerInputWidebandGainDb(sample_t transducer_input_wideband_gain_db);
+    void setAdmittanceFilter();
 
     struct UnprocessedSamples
     {
@@ -57,6 +58,12 @@ public:
         sample_t output_to_transducer;
         sample_t modelled_signal;
         sample_t transducer_return_with_gain_applied;
+    };
+
+    struct AdmittanceFilter
+    {
+        int order;
+        std::vector<Biquad> biquads;
     };
 
 
@@ -74,6 +81,8 @@ private:
     Biquad m_output_to_transducer_lowpass;
     Biquad m_input_from_transducer_lowpass;
     bool m_lowpass_filters_enabled;
+    AmplifierType amplifier_type;
+    AdmittanceFilter admittance_filter;
 
     sample_t applyTransducerModelFilter(sample_t input_sample);
 };
@@ -134,6 +143,33 @@ void TransducerFeedbackCancellation::setTransducerInputWidebandGainDb(sample_t t
     m_transducer_input_wideband_gain_lin = dBToLin(transducer_input_wideband_gain_db);
 }
 
+void TransducerFeedbackCancellation::setAdmittanceFilter()
+{
+    //Stacked biquads
+    admittance_filter.order = 3;
+    Biquad temp;
+    temp.m_coefficients.a0 = 0.29781613;
+    temp.m_coefficients.a1 = 0.00272268;
+    temp.m_coefficients.a2 = 0;
+    temp.m_coefficients.b1 = 0;
+    temp.m_coefficients.b2 = 0;
+    admittance_filter.biquads.push_back(temp);
+
+    temp.m_coefficients.a0 = 1;
+    temp.m_coefficients.a1 = -0.00933585;
+    temp.m_coefficients.a2 = 0;
+    temp.m_coefficients.b1 = -0.00242049;
+    temp.m_coefficients.b2 = -0.00095691;
+    admittance_filter.biquads.push_back(temp);
+
+    temp.m_coefficients.a0 = 1;
+    temp.m_coefficients.a1 = -1.99746549;
+    temp.m_coefficients.a2 = 0.99830338;
+    temp.m_coefficients.b1 = -1.96034539;
+    temp.m_coefficients.b2 = 0.9612116;
+    admittance_filter.biquads.push_back(temp);
+}
+
 
 void TransducerFeedbackCancellation::setup(Setup setup_parameters)
 {
@@ -170,26 +206,41 @@ void TransducerFeedbackCancellation::setup(Setup setup_parameters)
     m_output_to_transducer_lowpass.setup(lowpass_setup);
     m_input_from_transducer_lowpass.setup(lowpass_setup);
 
+    amplifier_type = setup_parameters.amplifier_type;
 }
 
 TransducerFeedbackCancellation::ProcessedSamples TransducerFeedbackCancellation::process(UnprocessedSamples unprocessed)
 {
     ProcessedSamples processed;
 
-    //Process input from transducer
-    processed.modelled_signal = applyTransducerModelFilter(unprocessed.reference_input_loopback);
+    if(amplifier_type == AmplifierType::CURRENT_DRIVE){
+        //Process input from transducer
+        processed.modelled_signal = applyTransducerModelFilter(unprocessed.reference_input_loopback);
 
-    processed.transducer_return_with_gain_applied = m_transducer_input_wideband_gain_lin * unprocessed.input_from_transducer;
+        processed.transducer_return_with_gain_applied = m_transducer_input_wideband_gain_lin * unprocessed.input_from_transducer;
 
-    processed.input_feedback_removed = processed.transducer_return_with_gain_applied - processed.modelled_signal;
+        processed.input_feedback_removed = processed.transducer_return_with_gain_applied - processed.modelled_signal;
 
-    //Process output to transducer
-    processed.output_to_transducer = unprocessed.output_to_transducer + m_resonance_tone.process();
+        //Process output to transducer
+        processed.output_to_transducer = unprocessed.output_to_transducer + m_resonance_tone.process();
 
-    if (m_lowpass_filters_enabled)
-    { //Filter to signal to/from transducer
-        processed.output_to_transducer = m_output_to_transducer_lowpass.process(processed.output_to_transducer);
-        processed.input_feedback_removed = m_input_from_transducer_lowpass.process(processed.input_feedback_removed);
+        if (m_lowpass_filters_enabled)
+        { //Filter to signal to/from transducer
+            processed.output_to_transducer = m_output_to_transducer_lowpass.process(processed.output_to_transducer);
+            processed.input_feedback_removed = m_input_from_transducer_lowpass.process(processed.input_feedback_removed);
+        }
+    }
+
+    else if(amplifier_type == AmplifierType::VOLTAGE_DRIVE){
+        processed.modelled_signal = applyTransducerModelFilter(unprocessed.reference_input_loopback);
+
+        processed.transducer_return_with_gain_applied = m_transducer_input_wideband_gain_lin * unprocessed.input_from_transducer;
+        processed.input_feedback_removed = processed.transducer_return_with_gain_applied - processed.modelled_signal;
+        if (m_lowpass_filters_enabled)
+        { //Filter to signal to/from transducer
+            processed.output_to_transducer = m_output_to_transducer_lowpass.process(processed.output_to_transducer);
+            processed.input_feedback_removed = m_input_from_transducer_lowpass.process(processed.input_feedback_removed);
+        }
     }
 
     return processed;
@@ -197,9 +248,18 @@ TransducerFeedbackCancellation::ProcessedSamples TransducerFeedbackCancellation:
 
 sample_t TransducerFeedbackCancellation::applyTransducerModelFilter(sample_t input_sample)
 {
-    sample_t output = m_resonance_filter.process(input_sample);
+     sample_t output;
+    if(amplifier_type == AmplifierType::CURRENT_DRIVE){
+        output = m_resonance_filter.process(input_sample);
 
-    //output = m_series_inductance_filter.process(output);
+        //output = m_series_inductance_filter.process(output);
+    }
+    else{
+        output = input_sample;
+        for(int i = 0; i < admittance_filter.order; i++){
+            output = admittance_filter.biquads[i].process(output);
+        }
+    }
     return output;
 }
 
