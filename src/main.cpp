@@ -46,6 +46,8 @@ TransducerFeedbackCancellation transducer_processing;
 ForceSensing force_sensing;
 Biquad meter_filter;
 
+//To reduce latency, set MAX_BUFFERS = 8 in play_queue.h and max_buffers = 8 in record_queue.h
+
 void blinkLED() {
   if (ledState == LOW) {
     ledState = HIGH;
@@ -100,13 +102,16 @@ int16_t buf_inR_usb[AUDIO_BLOCK_SAMPLES];
 int16_t buf_inL_i2s[AUDIO_BLOCK_SAMPLES];
 int16_t buf_inR_i2s[AUDIO_BLOCK_SAMPLES];
 
+int numbuf = 0;
+int starttime = 0;
 void loop() {
     int16_t *bp_outL_usb, *bp_outR_usb, *bp_outL_i2s, *bp_outR_i2s;
 
     // Wait for all channels to have content
     while (!queue_inL_usb.available() || !queue_inR_usb.available()
         || !queue_inL_i2s.available() || !queue_inR_i2s.available());
-
+    starttime = micros();
+    numbuf++;
     //Copy queue input buffers
     memcpy(buf_inL_usb, queue_inL_usb.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
     memcpy(buf_inR_usb, queue_inR_usb.readBuffer(), sizeof(short)*AUDIO_BLOCK_SAMPLES);
@@ -142,12 +147,9 @@ void loop() {
         bp_outL_i2s[i] = processed.output_to_transducer;
         bp_outR_i2s[i] = processed.output_to_transducer;
         bp_outL_usb[i] = processed.input_feedback_removed * 10;
-        bp_outR_usb[i] = unprocessed.reference_input_loopback;        
+        bp_outR_usb[i] = unprocessed.reference_input_loopback;
 
-        force_sensing.process(processed.input_feedback_removed, processed.output_to_transducer);
-
-
-        //scope.log(processed.transducer_return_with_gain_applied, processed.modelled_signal, processed.input_feedback_removed);
+        //force_sensing.process(processed.input_feedback_removed, processed.output_to_transducer);
 
         // rectify and filter signal for GUI meter
         /*sample_t input_feedback_removed_rectified = abs(processed.input_feedback_removed);  
@@ -167,4 +169,10 @@ void loop() {
     while(queue_outR_usb.playBuffer()){
         Serial.println("Play usb right fail.");
     }
+
+    if(numbuf >= 1000){
+        //Serial.printf("%d microseconds\n",  micros() - starttime);
+        numbuf = 0;
+    }
+
 }
