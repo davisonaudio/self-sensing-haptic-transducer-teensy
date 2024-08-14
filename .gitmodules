@@ -1,0 +1,3 @@
+[submodule "lib/audio-utils"]
+	path = lib/audio-utils
+	url = https://github.com/dsgong/audio-utils.git
